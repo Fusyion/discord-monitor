@@ -16,6 +16,8 @@ namespace DiscordMicMonitor
 {
     public static class Program
     {
+        public const string Version = "1.0.0";
+
         [STAThread]
         public static void Main()
         {
@@ -61,7 +63,6 @@ namespace DiscordMicMonitor
         private static readonly int[] ScaleOptions = { 50, 100, 125, 150, 200 };
 
         private readonly DiscordRpc _rpc;
-        private readonly ToolTip _tip = new ToolTip();
         private ToolStripMenuItem _scaleMenu;
         private int _scalePercent = 100;
         private MicState _state = MicState.Disconnected;
@@ -83,6 +84,10 @@ namespace DiscordMicMonitor
             _rpc.StateChanged += OnRpcState;
 
             var menu = new ContextMenuStrip();
+            var versionItem = new ToolStripMenuItem("Discord Mic Monitor v" + Program.Version);
+            versionItem.Enabled = false;
+            menu.Items.Add(versionItem);
+            menu.Items.Add(new ToolStripSeparator());
             _scaleMenu = new ToolStripMenuItem("Scale");
             foreach (int pct in ScaleOptions)
             {
@@ -121,7 +126,6 @@ namespace DiscordMicMonitor
                 y = wa.Bottom - Height - 16;
             }
             Location = new Point(x, y);
-            UpdateTip();
 
             _rpc.Start();
         }
@@ -135,7 +139,6 @@ namespace DiscordMicMonitor
                 {
                     if (_state == state) return;
                     _state = state;
-                    UpdateTip();
                     Render();
                 });
             }
@@ -165,18 +168,6 @@ namespace DiscordMicMonitor
                 Config.Scale = pct;
                 Config.Save();
             }
-        }
-
-        private void UpdateTip()
-        {
-            string text;
-            switch (_state)
-            {
-                case MicState.Unmuted: text = "Discord: unmuted — click to mute"; break;
-                case MicState.Muted: text = "Discord: MUTED — click to unmute"; break;
-                default: text = "Discord not connected"; break;
-            }
-            _tip.SetToolTip(this, text);
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
