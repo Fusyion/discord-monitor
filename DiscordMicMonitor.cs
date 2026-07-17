@@ -295,8 +295,12 @@ namespace DiscordMicMonitor
             {
                 args["mute"] = !_mute;
             }
-            try { SendCommand("SET_VOICE_SETTINGS", args, null); }
-            catch (Exception) { }
+            // Never touch the pipe from the UI thread.
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try { SendCommand("SET_VOICE_SETTINGS", args, null); }
+                catch (Exception) { }
+            });
         }
 
         private void RunLoop()
@@ -319,7 +323,10 @@ namespace DiscordMicMonitor
             _pipe = null;
             for (int i = 0; i < 10 && _pipe == null; i++)
             {
-                var p = new NamedPipeClientStream(".", "discord-ipc-" + i, PipeDirection.InOut);
+                // PipeOptions.Asynchronous is required: on a synchronous pipe handle
+                // Windows serializes all I/O, so the reader thread's blocking Read
+                // would block any Write from other threads (UI freeze on click).
+                var p = new NamedPipeClientStream(".", "discord-ipc-" + i, PipeDirection.InOut, PipeOptions.Asynchronous);
                 try { p.Connect(200); _pipe = p; }
                 catch (Exception) { p.Dispose(); }
             }
@@ -347,6 +354,10 @@ namespace DiscordMicMonitor
             object dataObj;
             msg.TryGetValue("data", out dataObj);
             var data = dataObj as Dictionary<string, object>;
+
+            if (evt == "ERROR")
+                Program.LogError(new Exception("Discord RPC error, cmd=" + cmd + ": "
+                    + (data != null ? GetStr(data, "message") : "(no message)")));
 
             if (cmd == "DISPATCH" && evt == "READY")
             {
