@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.IO.Pipes;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -69,15 +71,8 @@ namespace DiscordMicMonitor
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = false;
             TopMost = true;
-            ClientSize = new Size(52, 52);
-            DoubleBuffered = true;
+            ClientSize = new Size(68, 68);
             Text = "Discord Mic Monitor";
-
-            using (var path = new GraphicsPath())
-            {
-                path.AddEllipse(0, 0, ClientSize.Width, ClientSize.Height);
-                Region = new Region(path);
-            }
 
             _rpc = new DiscordRpc();
             _rpc.StateChanged += OnRpcState;
@@ -122,7 +117,7 @@ namespace DiscordMicMonitor
                     if (_state == state) return;
                     _state = state;
                     UpdateTip();
-                    Invalidate();
+                    Render();
                 });
             }
             catch (Exception) { }
@@ -190,24 +185,76 @@ namespace DiscordMicMonitor
             base.OnFormClosed(e);
         }
 
-        protected override void OnPaint(PaintEventArgs e)
+        // Per-pixel alpha layered window: smooth rounded corners + soft shadow.
+        protected override CreateParams CreateParams
         {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x80000;  // WS_EX_LAYERED
+                cp.ExStyle |= 0x80;     // WS_EX_TOOLWINDOW (keep out of Alt-Tab)
+                return cp;
+            }
+        }
 
-            Color bg;
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Render();
+        }
+
+        private void Render()
+        {
+            if (!IsHandleCreated || IsDisposed) return;
+            using (var bmp = new Bitmap(Width, Height, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    DrawCard(g);
+                }
+                PushLayeredBitmap(bmp);
+            }
+        }
+
+        private void DrawCard(Graphics g)
+        {
+            var card = new Rectangle(8, 7, 52, 52);
+            Color cardBg = Color.FromArgb(244, 30, 31, 34);   // near-opaque dark card
+
+            // soft drop shadow
+            for (int i = 5; i >= 1; i--)
+            {
+                var r = new Rectangle(card.X - i, card.Y - i + 2, card.Width + i * 2, card.Height + i * 2);
+                using (GraphicsPath sp = RoundedRect(r, 14 + i))
+                using (var sb = new SolidBrush(Color.FromArgb(9 + (5 - i) * 5, 0, 0, 0)))
+                    g.FillPath(sb, sp);
+            }
+
+            using (GraphicsPath path = RoundedRect(card, 14))
+            {
+                using (var b = new SolidBrush(cardBg))
+                    g.FillPath(b, path);
+                using (var border = new Pen(Color.FromArgb(30, 255, 255, 255), 1f))
+                    g.DrawPath(border, path);
+            }
+
+            Color micColor, dotColor;
             switch (_state)
             {
-                case MicState.Unmuted: bg = Color.FromArgb(59, 165, 92); break;   // Discord green
-                case MicState.Muted: bg = Color.FromArgb(237, 66, 69); break;     // Discord red
-                default: bg = Color.FromArgb(90, 94, 102); break;                 // gray
+                case MicState.Unmuted:
+                    micColor = Color.White;
+                    dotColor = Color.FromArgb(35, 165, 90);    // green
+                    break;
+                case MicState.Muted:
+                    micColor = Color.FromArgb(242, 63, 67);    // red
+                    dotColor = Color.FromArgb(242, 63, 67);
+                    break;
+                default:
+                    micColor = Color.FromArgb(128, 132, 142);  // gray
+                    dotColor = Color.FromArgb(128, 132, 142);
+                    break;
             }
-            using (var b = new SolidBrush(bg))
-                g.FillEllipse(b, 0, 0, Width, Height);
-
-            Color micColor = _state == MicState.Disconnected
-                ? Color.FromArgb(150, 255, 255, 255)
-                : Color.White;
 
             using (var pen = new Pen(micColor, 2.6f))
             using (var fill = new SolidBrush(micColor))
@@ -218,29 +265,128 @@ namespace DiscordMicMonitor
                 // capsule body
                 using (var capsule = new GraphicsPath())
                 {
-                    capsule.AddArc(20, 11, 12, 12, 180, 180);
-                    capsule.AddArc(20, 18, 12, 12, 0, 180);
+                    capsule.AddArc(28, 18, 12, 12, 180, 180);
+                    capsule.AddArc(28, 25, 12, 12, 0, 180);
                     capsule.CloseFigure();
                     g.FillPath(fill, capsule);
                 }
                 // cradle arc, stem, base
-                g.DrawArc(pen, 15, 15, 22, 20, 20, 140);
-                g.DrawLine(pen, 26, 35, 26, 40);
-                g.DrawLine(pen, 20, 41, 32, 41);
+                g.DrawArc(pen, 23, 22, 22, 20, 20, 140);
+                g.DrawLine(pen, 34, 42, 34, 47);
+                g.DrawLine(pen, 28, 48, 40, 48);
             }
 
             if (_state == MicState.Muted)
             {
-                using (var gap = new Pen(bg, 7f))
-                using (var slash = new Pen(Color.White, 3f))
+                using (var gap = new Pen(Color.FromArgb(30, 31, 34), 7f))
+                using (var slash = new Pen(micColor, 3f))
                 {
                     gap.StartCap = LineCap.Round; gap.EndCap = LineCap.Round;
                     slash.StartCap = LineCap.Round; slash.EndCap = LineCap.Round;
-                    g.DrawLine(gap, 15, 10, 38, 42);
-                    g.DrawLine(slash, 15, 10, 38, 42);
+                    g.DrawLine(gap, 23, 17, 45, 49);
+                    g.DrawLine(slash, 23, 17, 45, 49);
                 }
             }
+
+            // status dot, bottom-right, with a card-colored ring
+            var dot = new Rectangle(card.Right - 19, card.Bottom - 19, 13, 13);
+            var ring = new Rectangle(dot.X - 2, dot.Y - 2, dot.Width + 4, dot.Height + 4);
+            using (var rb = new SolidBrush(Color.FromArgb(30, 31, 34)))
+                g.FillEllipse(rb, ring);
+            using (var db = new SolidBrush(dotColor))
+                g.FillEllipse(db, dot);
         }
+
+        private static GraphicsPath RoundedRect(Rectangle r, int radius)
+        {
+            int d = radius * 2;
+            var path = new GraphicsPath();
+            path.AddArc(r.X, r.Y, d, d, 180, 90);
+            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        private void PushLayeredBitmap(Bitmap bitmap)
+        {
+            IntPtr screenDc = NativeMethods.GetDC(IntPtr.Zero);
+            IntPtr memDc = NativeMethods.CreateCompatibleDC(screenDc);
+            IntPtr hBitmap = IntPtr.Zero;
+            IntPtr oldBitmap = IntPtr.Zero;
+            try
+            {
+                hBitmap = bitmap.GetHbitmap(Color.FromArgb(0));
+                oldBitmap = NativeMethods.SelectObject(memDc, hBitmap);
+                var size = new NativeMethods.SIZE(bitmap.Width, bitmap.Height);
+                var src = new NativeMethods.POINT(0, 0);
+                var topPos = new NativeMethods.POINT(Left, Top);
+                var blend = new NativeMethods.BLENDFUNCTION();
+                blend.BlendOp = 0;              // AC_SRC_OVER
+                blend.BlendFlags = 0;
+                blend.SourceConstantAlpha = 255;
+                blend.AlphaFormat = 1;          // AC_SRC_ALPHA
+                NativeMethods.UpdateLayeredWindow(Handle, screenDc, ref topPos, ref size,
+                    memDc, ref src, 0, ref blend, 2 /* ULW_ALPHA */);
+            }
+            finally
+            {
+                NativeMethods.ReleaseDC(IntPtr.Zero, screenDc);
+                if (hBitmap != IntPtr.Zero)
+                {
+                    NativeMethods.SelectObject(memDc, oldBitmap);
+                    NativeMethods.DeleteObject(hBitmap);
+                }
+                NativeMethods.DeleteDC(memDc);
+            }
+        }
+    }
+
+    internal static class NativeMethods
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT
+        {
+            public int X, Y;
+            public POINT(int x, int y) { X = x; Y = y; }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SIZE
+        {
+            public int Cx, Cy;
+            public SIZE(int cx, int cy) { Cx = cx; Cy = cy; }
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct BLENDFUNCTION
+        {
+            public byte BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat;
+        }
+
+        [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst,
+            ref POINT pptDst, ref SIZE psize, IntPtr hdcSrc, ref POINT pptSrc,
+            int crKey, ref BLENDFUNCTION pblend, int dwFlags);
+
+        [DllImport("user32.dll", ExactSpelling = true)]
+        public static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll", ExactSpelling = true)]
+        public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("gdi32.dll", ExactSpelling = true)]
+        public static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+
+        [DllImport("gdi32.dll", ExactSpelling = true)]
+        public static extern bool DeleteDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll", ExactSpelling = true)]
+        public static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
+
+        [DllImport("gdi32.dll", ExactSpelling = true)]
+        public static extern bool DeleteObject(IntPtr hObject);
     }
 
     public class DiscordRpc
