@@ -117,11 +117,20 @@ namespace DiscordMicMonitor
 
             Config.Load();
             ApplyScale(Config.Scale, false);
-            Rectangle wa = Screen.PrimaryScreen.WorkingArea;
             int x = Config.X, y = Config.Y;
-            if (x == int.MinValue || y == int.MinValue ||
-                x < wa.Left - 10 || y < wa.Top - 10 || x > wa.Right - 20 || y > wa.Bottom - 20)
+            bool onScreen = false;
+            if (x != int.MinValue && y != int.MinValue)
             {
+                var rect = new Rectangle(x, y, Width, Height);
+                foreach (Screen s in Screen.AllScreens)
+                {
+                    Rectangle overlap = Rectangle.Intersect(s.WorkingArea, rect);
+                    if (overlap.Width >= 24 && overlap.Height >= 24) { onScreen = true; break; }
+                }
+            }
+            if (!onScreen)
+            {
+                Rectangle wa = Screen.PrimaryScreen.WorkingArea;
                 x = wa.Right - Width - 16;
                 y = wa.Bottom - Height - 16;
             }
