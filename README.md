@@ -1,12 +1,12 @@
 # Discord Mic Monitor
 
-A tiny always-on-top Windows widget that shows whether you are **muted or unmuted in Discord**.
+A tiny always-on-top Windows widget that shows whether you are **muted or unmuted in Discord** — a small rounded dark card with a mic icon and a status dot.
 
-- 🟢 green mic — unmuted
-- 🔴 red mic with slash — muted (or deafened)
-- ⚪ gray — Discord not running / not connected
+- ⚪ white mic, 🟢 green dot — unmuted
+- 🔴 red mic with slash, red dot — muted (or deafened)
+- gray mic and dot — Discord not running / not connected
 
-No installs, no dependencies, no Discord developer account. It's a single ~30 KB exe built with the C# compiler that ships with Windows.
+No installs, no dependencies, no Discord developer account. It's a single ~20 KB exe built with the C# compiler that ships with Windows.
 
 ## How it works
 
@@ -24,10 +24,12 @@ build.cmd
 
 Run `DiscordMicMonitor.exe`.
 
-- **Drag** the icon anywhere; position is remembered.
+- **Drag** the card anywhere, on any monitor; position and scale are remembered.
 - **Left-click** toggles Discord mute (also undeafens if you were deafened).
-- **Right-click** → Scale (50–200%), Re-authorize if the connection ever gets stuck, or Exit.
+- **Right-click** → version info, Scale (50–200%), Re-authorize if the connection ever gets stuck, or Exit.
 - It reconnects automatically if Discord restarts.
+
+If something misbehaves, check `%AppData%\DiscordMicMonitor\error.log`.
 
 ### Start with Windows (optional)
 
