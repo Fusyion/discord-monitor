@@ -26,7 +26,7 @@ Run `DiscordMicMonitor.exe`.
 
 - **Drag** the icon anywhere; position is remembered.
 - **Left-click** toggles Discord mute (also undeafens if you were deafened).
-- **Right-click** → Exit, or Re-authorize if the connection ever gets stuck.
+- **Right-click** → Scale (50–200%), Re-authorize if the connection ever gets stuck, or Exit.
 - It reconnects automatically if Discord restarts.
 
 ### Start with Windows (optional)

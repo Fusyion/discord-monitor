@@ -57,8 +57,13 @@ namespace DiscordMicMonitor
 
     public class MonitorForm : Form
     {
+        private const int BaseSize = 68;   // design size at 100% scale
+        private static readonly int[] ScaleOptions = { 50, 100, 125, 150, 200 };
+
         private readonly DiscordRpc _rpc;
         private readonly ToolTip _tip = new ToolTip();
+        private ToolStripMenuItem _scaleMenu;
+        private int _scalePercent = 100;
         private MicState _state = MicState.Disconnected;
         private Point _dragOffset;
         private Point _downScreen;
@@ -78,6 +83,19 @@ namespace DiscordMicMonitor
             _rpc.StateChanged += OnRpcState;
 
             var menu = new ContextMenuStrip();
+            _scaleMenu = new ToolStripMenuItem("Scale");
+            foreach (int pct in ScaleOptions)
+            {
+                var item = new ToolStripMenuItem(pct + "%");
+                int chosen = pct;
+                item.Click += delegate
+                {
+                    try { ApplyScale(chosen, true); }
+                    catch (Exception ex) { Program.LogError(ex); }
+                };
+                _scaleMenu.DropDownItems.Add(item);
+            }
+            menu.Items.Add(_scaleMenu);
             menu.Items.Add("Re-authorize", null, delegate
             {
                 try
@@ -93,6 +111,7 @@ namespace DiscordMicMonitor
             ContextMenuStrip = menu;
 
             Config.Load();
+            ApplyScale(Config.Scale, false);
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
             int x = Config.X, y = Config.Y;
             if (x == int.MinValue || y == int.MinValue ||
@@ -121,6 +140,31 @@ namespace DiscordMicMonitor
                 });
             }
             catch (Exception) { }
+        }
+
+        private void ApplyScale(int pct, bool save)
+        {
+            bool valid = false;
+            foreach (int s in ScaleOptions)
+                if (s == pct) { valid = true; break; }
+            if (!valid) pct = 100;
+
+            _scalePercent = pct;
+            int size = (int)Math.Round(BaseSize * pct / 100.0);
+            Size = new Size(size, size);
+
+            foreach (ToolStripItem it in _scaleMenu.DropDownItems)
+            {
+                var mi = it as ToolStripMenuItem;
+                if (mi != null) mi.Checked = mi.Text == pct + "%";
+            }
+
+            Render();
+            if (save)
+            {
+                Config.Scale = pct;
+                Config.Save();
+            }
         }
 
         private void UpdateTip()
@@ -211,6 +255,7 @@ namespace DiscordMicMonitor
                 using (Graphics g = Graphics.FromImage(bmp))
                 {
                     g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.ScaleTransform(_scalePercent / 100f, _scalePercent / 100f);
                     DrawCard(g);
                 }
                 PushLayeredBitmap(bmp);
@@ -693,6 +738,7 @@ namespace DiscordMicMonitor
         public static string Token;
         public static int X = int.MinValue;
         public static int Y = int.MinValue;
+        public static int Scale = 100;
 
         private static readonly object Lock = new object();
 
@@ -723,6 +769,7 @@ namespace DiscordMicMonitor
                         if (key == "token") Token = val;
                         else if (key == "x" && int.TryParse(val, out n)) X = n;
                         else if (key == "y" && int.TryParse(val, out n)) Y = n;
+                        else if (key == "scale" && int.TryParse(val, out n)) Scale = n;
                     }
                 }
                 catch (Exception) { }
@@ -740,6 +787,7 @@ namespace DiscordMicMonitor
                     if (!string.IsNullOrEmpty(Token)) lines.Add("token=" + Token);
                     if (X != int.MinValue) lines.Add("x=" + X);
                     if (Y != int.MinValue) lines.Add("y=" + Y);
+                    if (Scale != 100) lines.Add("scale=" + Scale);
                     File.WriteAllLines(FilePath, lines.ToArray());
                 }
                 catch (Exception) { }
