@@ -21,10 +21,33 @@ namespace DiscordMicMonitor
             using (new Mutex(true, "DiscordMicMonitor_SingleInstance", out createdNew))
             {
                 if (!createdNew) return;
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                Application.ThreadException += delegate(object s, ThreadExceptionEventArgs e)
+                {
+                    LogError(e.Exception);
+                };
+                AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e)
+                {
+                    LogError(e.ExceptionObject as Exception);
+                };
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new MonitorForm());
             }
+        }
+
+        public static void LogError(Exception ex)
+        {
+            try
+            {
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "DiscordMicMonitor");
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(Path.Combine(dir, "error.log"),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + ex + Environment.NewLine);
+            }
+            catch (Exception) { }
         }
     }
 
@@ -56,8 +79,20 @@ namespace DiscordMicMonitor
                 Region = new Region(path);
             }
 
+            _rpc = new DiscordRpc();
+            _rpc.StateChanged += OnRpcState;
+
             var menu = new ContextMenuStrip();
-            menu.Items.Add("Re-authorize", null, delegate { Config.Token = null; Config.Save(); _rpc.Reconnect(); });
+            menu.Items.Add("Re-authorize", null, delegate
+            {
+                try
+                {
+                    Config.Token = null;
+                    Config.Save();
+                    _rpc.Reconnect();
+                }
+                catch (Exception ex) { Program.LogError(ex); }
+            });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Exit", null, delegate { Close(); });
             ContextMenuStrip = menu;
@@ -74,8 +109,6 @@ namespace DiscordMicMonitor
             Location = new Point(x, y);
             UpdateTip();
 
-            _rpc = new DiscordRpc();
-            _rpc.StateChanged += OnRpcState;
             _rpc.Start();
         }
 
