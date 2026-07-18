@@ -328,8 +328,8 @@ namespace DiscordMicMonitor
                 {
                     gap.StartCap = LineCap.Round; gap.EndCap = LineCap.Round;
                     slash.StartCap = LineCap.Round; slash.EndCap = LineCap.Round;
-                    g.DrawLine(gap, 23, 17, 45, 49);
-                    g.DrawLine(slash, 23, 17, 45, 49);
+                    g.DrawLine(gap, 23, 49, 45, 17);
+                    g.DrawLine(slash, 23, 49, 45, 17);
                 }
             }
 
