@@ -12,6 +12,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags, needed for the changelog
 
       - name: Build
         shell: cmd
@@ -21,4 +23,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
-        run: gh release create "$GITHUB_REF_NAME" DiscordMicMonitor.exe --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          if [ -n "$prev" ]; then
+            notes=$(git log --no-merges --pretty=format:'- %s' "$prev..$GITHUB_REF_NAME")
+          else
+            notes=$(git log --no-merges --pretty=format:'- %s' "$GITHUB_REF_NAME")
+          fi
+          gh release create "$GITHUB_REF_NAME" DiscordMicMonitor.exe --title "$GITHUB_REF_NAME" --notes "$notes"
