@@ -1,7 +1,7 @@
 @echo off
 setlocal
 set CSC=%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
-"%CSC%" /nologo /target:winexe /optimize+ /out:DiscordMicMonitor.exe ^
+"%CSC%" /nologo /target:winexe /optimize+ /win32icon:app.ico /out:DiscordMicMonitor.exe ^
   /r:System.dll /r:System.Core.dll /r:System.Drawing.dll ^
   /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll ^
   DiscordMicMonitor.cs

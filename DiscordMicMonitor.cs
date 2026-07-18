@@ -8,21 +8,36 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.IO.Pipes;
 using System.Net;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
+[assembly: AssemblyTitle("Discord Mic Monitor")]
+[assembly: AssemblyProduct("Discord Mic Monitor")]
+[assembly: AssemblyDescription("Floating Discord mute/speaking indicator")]
+[assembly: AssemblyCompany("Fusyion")]
+[assembly: AssemblyCopyright("Copyright © 2026 Fusyion")]
+[assembly: AssemblyVersion(DiscordMicMonitor.Program.Version)]
+[assembly: AssemblyFileVersion(DiscordMicMonitor.Program.Version)]
+[assembly: AssemblyInformationalVersion(DiscordMicMonitor.Program.Version)]
+
 namespace DiscordMicMonitor
 {
     public static class Program
     {
-        public const string Version = "1.3.1";
+        public const string Version = "1.4.0";
 
         [STAThread]
-        public static void Main()
+        public static void Main(string[] args)
         {
+            if (args.Length >= 1 && args[0] == "--write-icon")
+            {
+                WriteIcon(args.Length > 1 ? args[1] : "app.ico");
+                return;
+            }
             using (var mutex = new Mutex(false, "DiscordMicMonitor_SingleInstance"))
             {
                 // Wait briefly instead of exiting immediately: after a self-update the
@@ -44,6 +59,55 @@ namespace DiscordMicMonitor
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new MonitorForm());
+            }
+        }
+
+        // Renders the unmuted card into a multi-size .ico (run: exe --write-icon app.ico).
+        // Keeps the embedded exe icon in sync with the app's actual drawing code.
+        private static void WriteIcon(string path)
+        {
+            int[] sizes = { 16, 24, 32, 48, 64, 128, 256 };
+            var pngs = new List<byte[]>();
+            foreach (int size in sizes)
+            {
+                using (var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb))
+                {
+                    using (Graphics g = Graphics.FromImage(bmp))
+                    {
+                        g.SmoothingMode = SmoothingMode.AntiAlias;
+                        float s = size / 52f;
+                        g.ScaleTransform(s, s);
+                        g.TranslateTransform(-8, -7);  // crop the shadow margins, like the tray icon
+                        MonitorForm.DrawCard(g, MicState.Unmuted, 0f);
+                    }
+                    using (var ms = new MemoryStream())
+                    {
+                        bmp.Save(ms, ImageFormat.Png);
+                        pngs.Add(ms.ToArray());
+                    }
+                }
+            }
+            using (FileStream f = File.Create(path))
+            using (var w = new BinaryWriter(f))
+            {
+                w.Write((short)0);              // reserved
+                w.Write((short)1);              // type: icon
+                w.Write((short)sizes.Length);
+                int offset = 6 + 16 * sizes.Length;
+                for (int i = 0; i < sizes.Length; i++)
+                {
+                    w.Write((byte)(sizes[i] == 256 ? 0 : sizes[i]));
+                    w.Write((byte)(sizes[i] == 256 ? 0 : sizes[i]));
+                    w.Write((byte)0);           // palette
+                    w.Write((byte)0);           // reserved
+                    w.Write((short)1);          // planes
+                    w.Write((short)32);         // bpp
+                    w.Write(pngs[i].Length);
+                    w.Write(offset);
+                    offset += pngs[i].Length;
+                }
+                foreach (byte[] png in pngs)
+                    w.Write(png);
             }
         }
 
@@ -80,6 +144,8 @@ namespace DiscordMicMonitor
         private MicState _state = MicState.Disconnected;
         private bool _shouldShow;   // only visible while in a Discord voice channel/call
         private bool _speaking;
+        private readonly System.Windows.Forms.Timer _pulseTimer;
+        private double _pulsePhase;
         private Point _dragOffset;
         private Point _downScreen;
         private bool _mouseDown;
@@ -93,6 +159,14 @@ namespace DiscordMicMonitor
             TopMost = true;
             ClientSize = new Size(68, 68);
             Text = "Discord Mic Monitor";
+
+            _pulseTimer = new System.Windows.Forms.Timer();
+            _pulseTimer.Interval = 40;
+            _pulseTimer.Tick += delegate
+            {
+                _pulsePhase += 0.21;   // ~1.2s per breath at 40ms ticks
+                Render();
+            };
 
             _rpc = new DiscordRpc();
             _rpc.StateChanged += OnRpcState;
@@ -257,6 +331,16 @@ namespace DiscordMicMonitor
                     _shouldShow = show;
                     _speaking = speaking;
                     if (trayChanged) UpdateTrayIcon();  // tray ignores the speaking glow
+                    bool pulse = show && speaking && state == MicState.Unmuted;
+                    if (pulse && !_pulseTimer.Enabled)
+                    {
+                        _pulsePhase = 0;
+                        _pulseTimer.Start();
+                    }
+                    else if (!pulse && _pulseTimer.Enabled)
+                    {
+                        _pulseTimer.Stop();
+                    }
                     if (show)
                     {
                         Visible = true;
@@ -306,7 +390,7 @@ namespace DiscordMicMonitor
                     // shrink it to ~60% of the space.
                     g.ScaleTransform(32f / 52f, 32f / 52f);
                     g.TranslateTransform(-8, -7);
-                    DrawCard(g);
+                    DrawCard(g, _state, 0f);
                 }
                 IntPtr h = bmp.GetHicon();
                 try
@@ -437,13 +521,15 @@ namespace DiscordMicMonitor
                 {
                     g.SmoothingMode = SmoothingMode.AntiAlias;
                     g.ScaleTransform(_scalePercent / 100f, _scalePercent / 100f);
-                    DrawCard(g);
+                    float glow = _speaking ? (float)(0.65 + 0.35 * Math.Sin(_pulsePhase)) : 0f;
+                    DrawCard(g, _state, glow);
                 }
                 PushLayeredBitmap(bmp);
             }
         }
 
-        private void DrawCard(Graphics g)
+        // glow: 0 = no speaking glow, 0..1 = pulse intensity of the green outline.
+        internal static void DrawCard(Graphics g, MicState state, float glow)
         {
             var card = new Rectangle(8, 7, 52, 52);
             Color cardBg = Color.FromArgb(244, 30, 31, 34);   // near-opaque dark card
@@ -465,23 +551,24 @@ namespace DiscordMicMonitor
                     g.DrawPath(border, path);
             }
 
-            // green outline + soft glow while transmitting
-            if (_speaking && _state == MicState.Unmuted)
+            // green outline + soft glow while transmitting, breathing with the pulse
+            if (glow > 0.01f && state == MicState.Unmuted)
             {
                 for (int i = 4; i >= 1; i--)
                 {
+                    int alpha = (int)((22 + (4 - i) * 12) * glow);
                     var r = new Rectangle(card.X - i, card.Y - i, card.Width + i * 2, card.Height + i * 2);
                     using (GraphicsPath gp = RoundedRect(r, 14 + i))
-                    using (var glow = new Pen(Color.FromArgb(22 + (4 - i) * 12, 35, 165, 90), 2.5f))
-                        g.DrawPath(glow, gp);
+                    using (var glowPen = new Pen(Color.FromArgb(alpha, 35, 165, 90), 2.5f))
+                        g.DrawPath(glowPen, gp);
                 }
                 using (GraphicsPath gp = RoundedRect(card, 14))
-                using (var outline = new Pen(Color.FromArgb(230, 35, 165, 90), 2.5f))
+                using (var outline = new Pen(Color.FromArgb((int)(120 + 135 * glow), 35, 165, 90), 2.5f))
                     g.DrawPath(outline, gp);
             }
 
             Color micColor, dotColor;
-            switch (_state)
+            switch (state)
             {
                 case MicState.Unmuted:
                     micColor = Color.White;
@@ -517,7 +604,7 @@ namespace DiscordMicMonitor
                 g.DrawLine(pen, 28, 48, 40, 48);
             }
 
-            if (_state == MicState.Muted)
+            if (state == MicState.Muted)
             {
                 using (var gap = new Pen(Color.FromArgb(30, 31, 34), 7f))
                 using (var slash = new Pen(micColor, 3f))
