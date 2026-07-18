@@ -18,7 +18,7 @@ namespace DiscordMicMonitor
 {
     public static class Program
     {
-        public const string Version = "1.3.0";
+        public const string Version = "1.3.1";
 
         [STAThread]
         public static void Main()
@@ -67,7 +67,7 @@ namespace DiscordMicMonitor
     public class MonitorForm : Form
     {
         private const int BaseSize = 68;   // design size at 100% scale
-        private static readonly int[] ScaleOptions = { 50, 100, 125, 150, 200 };
+        private static readonly int[] ScaleOptions = { 50, 75, 100, 125, 150, 200 };
 
         private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string RunValueName = "DiscordMicMonitor";
