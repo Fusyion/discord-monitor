@@ -220,7 +220,11 @@ namespace DiscordMicMonitor
                 using (Graphics g = Graphics.FromImage(bmp))
                 {
                     g.SmoothingMode = SmoothingMode.AntiAlias;
-                    g.ScaleTransform(32f / BaseSize, 32f / BaseSize);
+                    // Map just the card rect (8,7,52,52) onto the full 32x32 so the
+                    // icon fills its tray slot; the shadow margins would otherwise
+                    // shrink it to ~60% of the space.
+                    g.ScaleTransform(32f / 52f, 32f / 52f);
+                    g.TranslateTransform(-8, -7);
                     DrawCard(g);
                 }
                 IntPtr h = bmp.GetHicon();
