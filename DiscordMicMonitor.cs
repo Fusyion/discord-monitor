@@ -70,21 +70,11 @@ namespace DiscordMicMonitor
             var pngs = new List<byte[]>();
             foreach (int size in sizes)
             {
-                using (var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb))
+                using (Bitmap bmp = MonitorForm.RenderCardBitmap(size, MicState.Unmuted))
+                using (var ms = new MemoryStream())
                 {
-                    using (Graphics g = Graphics.FromImage(bmp))
-                    {
-                        g.SmoothingMode = SmoothingMode.AntiAlias;
-                        float s = size / 52f;
-                        g.ScaleTransform(s, s);
-                        g.TranslateTransform(-8, -7);  // crop the shadow margins, like the tray icon
-                        MonitorForm.DrawCard(g, MicState.Unmuted, 0f);
-                    }
-                    using (var ms = new MemoryStream())
-                    {
-                        bmp.Save(ms, ImageFormat.Png);
-                        pngs.Add(ms.ToArray());
-                    }
+                    bmp.Save(ms, ImageFormat.Png);
+                    pngs.Add(ms.ToArray());
                 }
             }
             using (FileStream f = File.Create(path))
@@ -130,11 +120,18 @@ namespace DiscordMicMonitor
 
     public class MonitorForm : Form
     {
+        private const string AppName = "Discord Mic Monitor";
         private const int BaseSize = 68;   // design size at 100% scale
         private static readonly int[] ScaleOptions = { 50, 75, 100, 125, 150, 200 };
 
         private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string RunValueName = "DiscordMicMonitor";
+
+        // shared palette
+        private static readonly Color CardColor = Color.FromArgb(30, 31, 34);
+        private static readonly Color AccentGreen = Color.FromArgb(35, 165, 90);
+        private static readonly Color AccentRed = Color.FromArgb(242, 63, 67);
+        private static readonly Color AccentGray = Color.FromArgb(128, 132, 142);
 
         private readonly DiscordRpc _rpc;
         private readonly NotifyIcon _tray;
@@ -144,6 +141,7 @@ namespace DiscordMicMonitor
         private MicState _state = MicState.Disconnected;
         private bool _shouldShow;   // only visible while in a Discord voice channel/call
         private bool _speaking;
+        private bool _closing;
         private Point _dragOffset;
         private Point _downScreen;
         private bool _mouseDown;
@@ -155,14 +153,14 @@ namespace DiscordMicMonitor
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = false;
             TopMost = true;
-            ClientSize = new Size(68, 68);
-            Text = "Discord Mic Monitor";
+            ClientSize = new Size(BaseSize, BaseSize);
+            Text = AppName;
 
             _rpc = new DiscordRpc();
             _rpc.StateChanged += OnRpcState;
 
             var menu = new ContextMenuStrip();
-            var versionItem = new ToolStripMenuItem("Discord Mic Monitor v" + Program.Version);
+            var versionItem = new ToolStripMenuItem(AppName + " v" + Program.Version);
             versionItem.Enabled = false;
             menu.Items.Add(versionItem);
             menu.Items.Add(new ToolStripSeparator());
@@ -224,7 +222,7 @@ namespace DiscordMicMonitor
             Location = new Point(x, y);
 
             _tray = new NotifyIcon();
-            _tray.Text = "Discord Mic Monitor";
+            _tray.Text = AppName;
             _tray.ContextMenuStrip = menu;
             _tray.Icon = CreateStateIcon();
             _tray.Visible = true;
@@ -241,6 +239,14 @@ namespace DiscordMicMonitor
                 Thread.Sleep(15000);
                 CheckForUpdates(false);
             });
+        }
+
+        // Marshals to the UI thread, tolerating races around startup/shutdown.
+        private void OnUi(Action action)
+        {
+            if (IsDisposed) return;
+            try { BeginInvoke(action); }
+            catch (Exception) { }
         }
 
         private void CheckForUpdates(bool interactive)
@@ -266,32 +272,23 @@ namespace DiscordMicMonitor
                         ShowMessage("You are on the latest version (v" + Program.Version + ").", MessageBoxIcon.Information);
                     return;
                 }
-                string v = version, u = url;
-                try
-                {
-                    BeginInvoke((Action)delegate { PromptAndInstall(v, u); });
-                }
-                catch (Exception) { }
+                OnUi(delegate { PromptAndInstall(version, url); });
             });
         }
 
         private void ShowMessage(string text, MessageBoxIcon icon)
         {
-            try
+            OnUi(delegate
             {
-                BeginInvoke((Action)delegate
-                {
-                    MessageBox.Show(text, "Discord Mic Monitor", MessageBoxButtons.OK, icon);
-                });
-            }
-            catch (Exception) { }
+                MessageBox.Show(text, AppName, MessageBoxButtons.OK, icon);
+            });
         }
 
         private void PromptAndInstall(string version, string url)
         {
             DialogResult r = MessageBox.Show(
                 "Version " + version + " is available (you have " + Program.Version + ").\n\nUpdate now?",
-                "Discord Mic Monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (r != DialogResult.Yes) return;
             try
             {
@@ -300,7 +297,7 @@ namespace DiscordMicMonitor
             catch (Exception ex)
             {
                 Program.LogError(ex);
-                MessageBox.Show("Update failed: " + ex.Message, "Discord Mic Monitor",
+                MessageBox.Show("Update failed: " + ex.Message, AppName,
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
@@ -309,31 +306,26 @@ namespace DiscordMicMonitor
 
         private void OnRpcState(MicState state, bool inVoice, bool speaking)
         {
-            if (IsDisposed) return;
-            try
+            OnUi(delegate
             {
-                BeginInvoke((Action)delegate
+                bool show = inVoice && state != MicState.Disconnected;
+                if (_state == state && _shouldShow == show && _speaking == speaking) return;
+                bool trayChanged = _state != state || _shouldShow != show;
+                _state = state;
+                _shouldShow = show;
+                _speaking = speaking;
+                if (trayChanged) UpdateTrayIcon();  // tray ignores the speaking glow
+                if (show)
                 {
-                    bool show = inVoice && state != MicState.Disconnected;
-                    if (_state == state && _shouldShow == show && _speaking == speaking) return;
-                    bool trayChanged = _state != state || _shouldShow != show;
-                    _state = state;
-                    _shouldShow = show;
-                    _speaking = speaking;
-                    if (trayChanged) UpdateTrayIcon();  // tray ignores the speaking glow
-                    if (show)
-                    {
-                        Visible = true;
-                        TopMost = true;
-                        Render();
-                    }
-                    else
-                    {
-                        Visible = false;
-                    }
-                });
-            }
-            catch (Exception) { }
+                    Visible = true;
+                    TopMost = true;
+                    Render();
+                }
+                else
+                {
+                    Visible = false;
+                }
+            });
         }
 
         // Keeps the window hidden until we're in a voice channel, including at startup.
@@ -358,20 +350,26 @@ namespace DiscordMicMonitor
             _startupItem.Checked = IsStartupEnabled();
         }
 
+        // Renders the card mapped onto the full square (shadow margins cropped, so
+        // it fills an icon slot). Shared by the tray icon and the exe icon writer.
+        internal static Bitmap RenderCardBitmap(int size, MicState state)
+        {
+            var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                float s = size / 52f;
+                g.ScaleTransform(s, s);
+                g.TranslateTransform(-8, -7);
+                DrawCard(g, state, 0f);
+            }
+            return bmp;
+        }
+
         private Icon CreateStateIcon()
         {
-            using (var bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb))
+            using (Bitmap bmp = RenderCardBitmap(32, _state))
             {
-                using (Graphics g = Graphics.FromImage(bmp))
-                {
-                    g.SmoothingMode = SmoothingMode.AntiAlias;
-                    // Map just the card rect (8,7,52,52) onto the full 32x32 so the
-                    // icon fills its tray slot; the shadow margins would otherwise
-                    // shrink it to ~60% of the space.
-                    g.ScaleTransform(32f / 52f, 32f / 52f);
-                    g.TranslateTransform(-8, -7);
-                    DrawCard(g, _state, 0f);
-                }
                 IntPtr h = bmp.GetHicon();
                 try
                 {
@@ -384,6 +382,7 @@ namespace DiscordMicMonitor
 
         private void UpdateTrayIcon()
         {
+            if (_closing) return;  // a queued state update can land after the tray is disposed
             Icon old = _tray.Icon;
             _tray.Icon = CreateStateIcon();
             string status;
@@ -393,16 +392,13 @@ namespace DiscordMicMonitor
                 case MicState.Muted: status = "muted"; break;
                 default: status = "not connected"; break;
             }
-            _tray.Text = "Discord Mic Monitor - " + status;
+            _tray.Text = AppName + " - " + status;
             if (old != null) old.Dispose();
         }
 
         private void ApplyScale(int pct, bool save)
         {
-            bool valid = false;
-            foreach (int s in ScaleOptions)
-                if (s == pct) { valid = true; break; }
-            if (!valid) pct = 100;
+            if (Array.IndexOf(ScaleOptions, pct) < 0) pct = 100;
 
             _scalePercent = pct;
             int size = (int)Math.Round(BaseSize * pct / 100.0);
@@ -468,6 +464,7 @@ namespace DiscordMicMonitor
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            _closing = true;
             _tray.Visible = false;
             _tray.Dispose();
             _rpc.Stop();
@@ -511,7 +508,7 @@ namespace DiscordMicMonitor
         internal static void DrawCard(Graphics g, MicState state, float glow)
         {
             var card = new Rectangle(8, 7, 52, 52);
-            Color cardBg = Color.FromArgb(244, 30, 31, 34);   // near-opaque dark card
+            Color cardBg = Color.FromArgb(244, CardColor);   // near-opaque dark card
 
             // soft drop shadow
             for (int i = 5; i >= 1; i--)
@@ -538,11 +535,11 @@ namespace DiscordMicMonitor
                     int alpha = (int)((22 + (4 - i) * 12) * glow);
                     var r = new Rectangle(card.X - i, card.Y - i, card.Width + i * 2, card.Height + i * 2);
                     using (GraphicsPath gp = RoundedRect(r, 14 + i))
-                    using (var glowPen = new Pen(Color.FromArgb(alpha, 35, 165, 90), 2.5f))
+                    using (var glowPen = new Pen(Color.FromArgb(alpha, AccentGreen), 2.5f))
                         g.DrawPath(glowPen, gp);
                 }
                 using (GraphicsPath gp = RoundedRect(card, 14))
-                using (var outline = new Pen(Color.FromArgb((int)(120 + 135 * glow), 35, 165, 90), 2.5f))
+                using (var outline = new Pen(Color.FromArgb((int)(120 + 135 * glow), AccentGreen), 2.5f))
                     g.DrawPath(outline, gp);
             }
 
@@ -551,15 +548,15 @@ namespace DiscordMicMonitor
             {
                 case MicState.Unmuted:
                     micColor = Color.White;
-                    dotColor = Color.FromArgb(35, 165, 90);    // green
+                    dotColor = AccentGreen;
                     break;
                 case MicState.Muted:
-                    micColor = Color.FromArgb(242, 63, 67);    // red
-                    dotColor = Color.FromArgb(242, 63, 67);
+                    micColor = AccentRed;
+                    dotColor = AccentRed;
                     break;
                 default:
-                    micColor = Color.FromArgb(128, 132, 142);  // gray
-                    dotColor = Color.FromArgb(128, 132, 142);
+                    micColor = AccentGray;
+                    dotColor = AccentGray;
                     break;
             }
 
@@ -585,7 +582,7 @@ namespace DiscordMicMonitor
 
             if (state == MicState.Muted)
             {
-                using (var gap = new Pen(Color.FromArgb(30, 31, 34), 7f))
+                using (var gap = new Pen(CardColor, 7f))
                 using (var slash = new Pen(micColor, 3f))
                 {
                     gap.StartCap = LineCap.Round; gap.EndCap = LineCap.Round;
@@ -598,7 +595,7 @@ namespace DiscordMicMonitor
             // status dot, bottom-right, with a card-colored ring
             var dot = new Rectangle(card.Right - 19, card.Bottom - 19, 13, 13);
             var ring = new Rectangle(dot.X - 2, dot.Y - 2, dot.Width + 4, dot.Height + 4);
-            using (var rb = new SolidBrush(Color.FromArgb(30, 31, 34)))
+            using (var rb = new SolidBrush(CardColor))
                 g.FillEllipse(rb, ring);
             using (var db = new SolidBrush(dotColor))
                 g.FillEllipse(db, dot);
@@ -774,7 +771,7 @@ namespace DiscordMicMonitor
                 _inVoice = false;
                 _speaking = false;
                 _channelId = null;
-                FireDisconnected();
+                Fire(MicState.Disconnected, false, false);
                 ClosePipe();
                 for (int i = 0; i < 30 && _running && !_reconnectRequested; i++)
                     Thread.Sleep(100);
@@ -848,10 +845,10 @@ namespace DiscordMicMonitor
                     Authorize();
                     return;
                 }
-                SendCommand("SUBSCRIBE", new Dictionary<string, object>(), "VOICE_SETTINGS_UPDATE");
-                SendCommand("SUBSCRIBE", new Dictionary<string, object>(), "VOICE_CHANNEL_SELECT");
-                SendCommand("GET_VOICE_SETTINGS", new Dictionary<string, object>(), null);
-                SendCommand("GET_SELECTED_VOICE_CHANNEL", new Dictionary<string, object>(), null);
+                SendCommand("SUBSCRIBE", null, "VOICE_SETTINGS_UPDATE");
+                SendCommand("SUBSCRIBE", null, "VOICE_CHANNEL_SELECT");
+                SendCommand("GET_VOICE_SETTINGS", null, null);
+                SendCommand("GET_SELECTED_VOICE_CHANNEL", null, null);
             }
             else if (cmd == "GET_VOICE_SETTINGS" && evt != "ERROR" && data != null)
             {
@@ -933,21 +930,19 @@ namespace DiscordMicMonitor
 
         private void FireState()
         {
-            Action<MicState, bool, bool> h = StateChanged;
-            if (h != null) h((_mute || _deaf) ? MicState.Muted : MicState.Unmuted, _inVoice, _speaking);
+            Fire((_mute || _deaf) ? MicState.Muted : MicState.Unmuted, _inVoice, _speaking);
         }
 
-        private void FireDisconnected()
+        private void Fire(MicState state, bool inVoice, bool speaking)
         {
             Action<MicState, bool, bool> h = StateChanged;
-            if (h != null) h(MicState.Disconnected, false, false);
+            if (h != null) h(state, inVoice, speaking);
         }
 
         private string ExchangeCode(string code)
         {
             if (string.IsNullOrEmpty(code)) throw new Exception("no auth code");
-            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-            var req = (HttpWebRequest)WebRequest.Create(TokenEndpoint);
+            HttpWebRequest req = Http.Create(TokenEndpoint, 100000);
             req.Method = "POST";
             req.ContentType = "application/json";
             byte[] body = Encoding.UTF8.GetBytes(_json.Serialize(new Dictionary<string, object> { { "code", code } }));
@@ -969,7 +964,7 @@ namespace DiscordMicMonitor
             var d = new Dictionary<string, object>
             {
                 { "cmd", cmd },
-                { "args", args },
+                { "args", args ?? new Dictionary<string, object>() },
                 { "nonce", Interlocked.Increment(ref _nonce).ToString() }
             };
             if (evt != null) d["evt"] = evt;
@@ -1045,8 +1040,7 @@ namespace DiscordMicMonitor
 
         private static string GetStr(Dictionary<string, object> d, string key)
         {
-            object v;
-            return d.TryGetValue(key, out v) ? v as string : null;
+            return Get(d, key) as string;
         }
 
         private void ClosePipe()
@@ -1061,6 +1055,18 @@ namespace DiscordMicMonitor
         }
     }
 
+    internal static class Http
+    {
+        public static HttpWebRequest Create(string url, int timeoutMs)
+        {
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            var req = (HttpWebRequest)WebRequest.Create(url);
+            req.UserAgent = "DiscordMicMonitor";
+            req.Timeout = timeoutMs;
+            return req;
+        }
+    }
+
     public static class Updater
     {
         private const string ApiLatest = "https://api.github.com/repos/Fusyion/discord-monitor/releases/latest";
@@ -1071,11 +1077,8 @@ namespace DiscordMicMonitor
         {
             latestVersion = null;
             downloadUrl = null;
-            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-            var req = (HttpWebRequest)WebRequest.Create(ApiLatest);
-            req.UserAgent = "DiscordMicMonitor";
+            HttpWebRequest req = Http.Create(ApiLatest, 10000);
             req.Accept = "application/vnd.github+json";
-            req.Timeout = 10000;
             string body;
             using (var resp = (HttpWebResponse)req.GetResponse())
             using (var r = new StreamReader(resp.GetResponseStream()))
@@ -1122,10 +1125,7 @@ namespace DiscordMicMonitor
             string exe = Application.ExecutablePath;
             string tmp = exe + ".new";
             string old = exe + ".old";
-            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-            var req = (HttpWebRequest)WebRequest.Create(url);
-            req.UserAgent = "DiscordMicMonitor";
-            req.Timeout = 30000;
+            HttpWebRequest req = Http.Create(url, 30000);
             using (var resp = (HttpWebResponse)req.GetResponse())
             using (Stream s = resp.GetResponseStream())
             using (FileStream f = File.Create(tmp))
