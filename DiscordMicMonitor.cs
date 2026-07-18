@@ -144,8 +144,6 @@ namespace DiscordMicMonitor
         private MicState _state = MicState.Disconnected;
         private bool _shouldShow;   // only visible while in a Discord voice channel/call
         private bool _speaking;
-        private readonly System.Windows.Forms.Timer _pulseTimer;
-        private double _pulsePhase;
         private Point _dragOffset;
         private Point _downScreen;
         private bool _mouseDown;
@@ -159,14 +157,6 @@ namespace DiscordMicMonitor
             TopMost = true;
             ClientSize = new Size(68, 68);
             Text = "Discord Mic Monitor";
-
-            _pulseTimer = new System.Windows.Forms.Timer();
-            _pulseTimer.Interval = 40;
-            _pulseTimer.Tick += delegate
-            {
-                _pulsePhase += 0.21;   // ~1.2s per breath at 40ms ticks
-                Render();
-            };
 
             _rpc = new DiscordRpc();
             _rpc.StateChanged += OnRpcState;
@@ -198,7 +188,7 @@ namespace DiscordMicMonitor
             _startupItem.Checked = IsStartupEnabled();
             menu.Items.Add(_startupItem);
             menu.Items.Add("Check for updates...", null, delegate { CheckForUpdates(true); });
-            menu.Items.Add("Re-authorize", null, delegate
+            menu.Items.Add("Re-authorise", null, delegate
             {
                 try
                 {
@@ -331,16 +321,6 @@ namespace DiscordMicMonitor
                     _shouldShow = show;
                     _speaking = speaking;
                     if (trayChanged) UpdateTrayIcon();  // tray ignores the speaking glow
-                    bool pulse = show && speaking && state == MicState.Unmuted;
-                    if (pulse && !_pulseTimer.Enabled)
-                    {
-                        _pulsePhase = 0;
-                        _pulseTimer.Start();
-                    }
-                    else if (!pulse && _pulseTimer.Enabled)
-                    {
-                        _pulseTimer.Stop();
-                    }
                     if (show)
                     {
                         Visible = true;
@@ -521,8 +501,7 @@ namespace DiscordMicMonitor
                 {
                     g.SmoothingMode = SmoothingMode.AntiAlias;
                     g.ScaleTransform(_scalePercent / 100f, _scalePercent / 100f);
-                    float glow = _speaking ? (float)(0.65 + 0.35 * Math.Sin(_pulsePhase)) : 0f;
-                    DrawCard(g, _state, glow);
+                    DrawCard(g, _state, _speaking ? 1f : 0f);
                 }
                 PushLayeredBitmap(bmp);
             }

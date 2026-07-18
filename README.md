@@ -13,7 +13,7 @@ No installs, no dependencies, no Discord developer account. It's a single ~20 KB
 
 It connects to the Discord desktop client's local IPC pipe (`\\.\pipe\discord-ipc-0`) and subscribes to voice-settings changes, identifying as Discord's own **StreamKit Overlay** app. The one-time OAuth code is exchanged via `streamkit.discord.com` (Discord's own service), so there is no client secret or token for you to manage. Everything else is local.
 
-On first run, Discord may pop up an authorization dialog for "StreamKit Overlay" — click **Authorize** once. The token is cached in `%AppData%\DiscordMicMonitor\config.txt`.
+On first run, Discord may pop up an authorisation dialog for "StreamKit Overlay" — click **Authorize** once (Discord's button). The token is cached in `%AppData%\DiscordMicMonitor\config.txt`.
 
 ## Build
 
@@ -28,14 +28,14 @@ Run `DiscordMicMonitor.exe`.
 - The card **only appears while you are in a voice channel or call**; the rest of the time it stays out of the way. A tray icon (which also mirrors your mute state) is always there for the menu.
 - **Drag** the card anywhere, on any monitor; position and scale are remembered.
 - **Left-click** toggles Discord mute (also undeafens if you were deafened).
-- **Right-click** the card or tray icon → version info, Scale (50–200%), Start with Windows, Re-authorize if the connection ever gets stuck, or Exit.
+- **Right-click** the card or tray icon → version info, Scale (50–200%), Start with Windows, Re-authorise if the connection ever gets stuck, or Exit.
 - It reconnects automatically if Discord restarts.
 
 If something misbehaves, check `%AppData%\DiscordMicMonitor\error.log`.
 
 ### Updating
 
-The app checks GitHub for a newer release shortly after startup and asks before installing; you can also right-click → **Check for updates...**. Updates it downloads itself never trigger SmartScreen warnings (no Mark of the Web). It swaps its own exe in place and restarts, so position, scale, authorization and the autostart entry all survive.
+The app checks GitHub for a newer release shortly after startup and asks before installing; you can also right-click → **Check for updates...**. Updates it downloads itself never trigger SmartScreen warnings (no Mark of the Web). It swaps its own exe in place and restarts, so position, scale, authorisation and the autostart entry all survive.
 
 To publish a release: bump `Program.Version`, commit, then tag and push — GitHub Actions builds the exe and attaches it to the release:
 
