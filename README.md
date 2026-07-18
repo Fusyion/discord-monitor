@@ -33,6 +33,17 @@ Run `DiscordMicMonitor.exe`.
 
 If something misbehaves, check `%AppData%\DiscordMicMonitor\error.log`.
 
+### Updating
+
+The app checks GitHub for a newer release shortly after startup and asks before installing; you can also right-click → **Check for updates...**. Updates it downloads itself never trigger SmartScreen warnings (no Mark of the Web). It swaps its own exe in place and restarts, so position, scale, authorization and the autostart entry all survive.
+
+To publish a release: bump `Program.Version`, commit, then tag and push — GitHub Actions builds the exe and attaches it to the release:
+
+```
+git tag v1.3.0
+git push origin v1.3.0
+```
+
 ### Start with Windows (optional)
 
 Right-click the card or tray icon and tick **Start with Windows** (uses the standard `HKCU` Run registry key).

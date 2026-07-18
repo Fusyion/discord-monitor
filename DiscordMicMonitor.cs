@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Microsoft.Win32;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -17,15 +18,20 @@ namespace DiscordMicMonitor
 {
     public static class Program
     {
-        public const string Version = "1.2.0";
+        public const string Version = "1.3.0";
 
         [STAThread]
         public static void Main()
         {
-            bool createdNew;
-            using (new Mutex(true, "DiscordMicMonitor_SingleInstance", out createdNew))
+            using (var mutex = new Mutex(false, "DiscordMicMonitor_SingleInstance"))
             {
-                if (!createdNew) return;
+                // Wait briefly instead of exiting immediately: after a self-update the
+                // new process starts while the old one is still shutting down.
+                bool acquired = false;
+                try { acquired = mutex.WaitOne(5000); }
+                catch (AbandonedMutexException) { acquired = true; }
+                if (!acquired) return;
+                Updater.CleanupOldExe();
                 Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
                 Application.ThreadException += delegate(object s, ThreadExceptionEventArgs e)
                 {
@@ -117,6 +123,7 @@ namespace DiscordMicMonitor
             };
             _startupItem.Checked = IsStartupEnabled();
             menu.Items.Add(_startupItem);
+            menu.Items.Add("Check for updates...", null, delegate { CheckForUpdates(true); });
             menu.Items.Add("Re-authorize", null, delegate
             {
                 try
@@ -163,6 +170,77 @@ namespace DiscordMicMonitor
             IntPtr unused = Handle;
 
             _rpc.Start();
+
+            // quiet update check shortly after startup
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Thread.Sleep(15000);
+                CheckForUpdates(false);
+            });
+        }
+
+        private void CheckForUpdates(bool interactive)
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string version = null, url = null;
+                bool found;
+                try
+                {
+                    found = Updater.TryGetUpdate(out version, out url);
+                }
+                catch (Exception ex)
+                {
+                    Program.LogError(ex);
+                    if (interactive)
+                        ShowMessage("Could not check for updates (see error.log).", MessageBoxIcon.Warning);
+                    return;
+                }
+                if (!found)
+                {
+                    if (interactive)
+                        ShowMessage("You are on the latest version (v" + Program.Version + ").", MessageBoxIcon.Information);
+                    return;
+                }
+                string v = version, u = url;
+                try
+                {
+                    BeginInvoke((Action)delegate { PromptAndInstall(v, u); });
+                }
+                catch (Exception) { }
+            });
+        }
+
+        private void ShowMessage(string text, MessageBoxIcon icon)
+        {
+            try
+            {
+                BeginInvoke((Action)delegate
+                {
+                    MessageBox.Show(text, "Discord Mic Monitor", MessageBoxButtons.OK, icon);
+                });
+            }
+            catch (Exception) { }
+        }
+
+        private void PromptAndInstall(string version, string url)
+        {
+            DialogResult r = MessageBox.Show(
+                "Version " + version + " is available (you have " + Program.Version + ").\n\nUpdate now?",
+                "Discord Mic Monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (r != DialogResult.Yes) return;
+            try
+            {
+                Updater.DownloadAndSwap(url);
+            }
+            catch (Exception ex)
+            {
+                Program.LogError(ex);
+                MessageBox.Show("Update failed: " + ex.Message, "Discord Mic Monitor",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            Close();  // new exe is already starting; it waits for our mutex
         }
 
         private void OnRpcState(MicState state, bool inVoice, bool speaking)
@@ -914,6 +992,120 @@ namespace DiscordMicMonitor
                 try { p.Dispose(); }
                 catch (Exception) { }
             }
+        }
+    }
+
+    public static class Updater
+    {
+        private const string ApiLatest = "https://api.github.com/repos/Fusyion/discord-monitor/releases/latest";
+        private const string AssetName = "DiscordMicMonitor.exe";
+
+        // Returns true when a release newer than Program.Version exists.
+        public static bool TryGetUpdate(out string latestVersion, out string downloadUrl)
+        {
+            latestVersion = null;
+            downloadUrl = null;
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            var req = (HttpWebRequest)WebRequest.Create(ApiLatest);
+            req.UserAgent = "DiscordMicMonitor";
+            req.Accept = "application/vnd.github+json";
+            req.Timeout = 10000;
+            string body;
+            using (var resp = (HttpWebResponse)req.GetResponse())
+            using (var r = new StreamReader(resp.GetResponseStream()))
+                body = r.ReadToEnd();
+            var json = new JavaScriptSerializer();
+            var obj = json.DeserializeObject(body) as Dictionary<string, object>;
+            if (obj == null) return false;
+
+            object tagObj;
+            obj.TryGetValue("tag_name", out tagObj);
+            string tag = tagObj as string;
+            if (string.IsNullOrEmpty(tag)) return false;
+            string version = tag.TrimStart('v', 'V');
+
+            object assetsObj;
+            obj.TryGetValue("assets", out assetsObj);
+            var assets = assetsObj as object[];
+            if (assets != null)
+            {
+                foreach (object a in assets)
+                {
+                    var asset = a as Dictionary<string, object>;
+                    if (asset == null) continue;
+                    object name;
+                    asset.TryGetValue("name", out name);
+                    if ((name as string) == AssetName)
+                    {
+                        object url;
+                        asset.TryGetValue("browser_download_url", out url);
+                        downloadUrl = url as string;
+                        break;
+                    }
+                }
+            }
+            if (downloadUrl == null || !IsNewer(version, Program.Version)) return false;
+            latestVersion = version;
+            return true;
+        }
+
+        // Downloads to exe.new, renames the running exe aside (allowed while it
+        // runs), moves the new one in place, and starts it. Caller exits the app.
+        public static void DownloadAndSwap(string url)
+        {
+            string exe = Application.ExecutablePath;
+            string tmp = exe + ".new";
+            string old = exe + ".old";
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            var req = (HttpWebRequest)WebRequest.Create(url);
+            req.UserAgent = "DiscordMicMonitor";
+            req.Timeout = 30000;
+            using (var resp = (HttpWebResponse)req.GetResponse())
+            using (Stream s = resp.GetResponseStream())
+            using (FileStream f = File.Create(tmp))
+            {
+                byte[] buf = new byte[81920];
+                int n;
+                while ((n = s.Read(buf, 0, buf.Length)) > 0)
+                    f.Write(buf, 0, n);
+            }
+            if (File.Exists(old)) File.Delete(old);
+            File.Move(exe, old);
+            File.Move(tmp, exe);
+            Process.Start(exe);
+        }
+
+        public static void CleanupOldExe()
+        {
+            try
+            {
+                string old = Application.ExecutablePath + ".old";
+                if (File.Exists(old)) File.Delete(old);
+            }
+            catch (Exception) { }  // previous instance may still be exiting; next run gets it
+        }
+
+        private static bool IsNewer(string a, string b)
+        {
+            int[] pa = ParseVersion(a), pb = ParseVersion(b);
+            for (int i = 0; i < 3; i++)
+            {
+                if (pa[i] > pb[i]) return true;
+                if (pa[i] < pb[i]) return false;
+            }
+            return false;
+        }
+
+        private static int[] ParseVersion(string v)
+        {
+            string[] parts = v.Split('.');
+            int[] r = new int[3];
+            for (int i = 0; i < 3 && i < parts.Length; i++)
+            {
+                int n;
+                if (int.TryParse(parts[i].Trim(), out n)) r[i] = n;
+            }
+            return r;
         }
     }
 
