@@ -3,6 +3,7 @@
 A tiny always-on-top Windows widget that shows whether you are **muted or unmuted in Discord** — a small rounded dark card with a mic icon and a status dot.
 
 - ⚪ white mic, 🟢 green dot — unmuted
+- 🟢 green outline/glow — actively speaking (voice transmitting)
 - 🔴 red mic with slash, red dot — muted (or deafened)
 - gray mic and dot — Discord not running / not connected
 

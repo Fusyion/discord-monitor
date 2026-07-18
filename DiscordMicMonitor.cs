@@ -17,7 +17,7 @@ namespace DiscordMicMonitor
 {
     public static class Program
     {
-        public const string Version = "1.1.0";
+        public const string Version = "1.2.0";
 
         [STAThread]
         public static void Main()
@@ -73,6 +73,7 @@ namespace DiscordMicMonitor
         private int _scalePercent = 100;
         private MicState _state = MicState.Disconnected;
         private bool _shouldShow;   // only visible while in a Discord voice channel/call
+        private bool _speaking;
         private Point _dragOffset;
         private Point _downScreen;
         private bool _mouseDown;
@@ -164,7 +165,7 @@ namespace DiscordMicMonitor
             _rpc.Start();
         }
 
-        private void OnRpcState(MicState state, bool inVoice)
+        private void OnRpcState(MicState state, bool inVoice, bool speaking)
         {
             if (IsDisposed) return;
             try
@@ -172,10 +173,12 @@ namespace DiscordMicMonitor
                 BeginInvoke((Action)delegate
                 {
                     bool show = inVoice && state != MicState.Disconnected;
-                    if (_state == state && _shouldShow == show) return;
+                    if (_state == state && _shouldShow == show && _speaking == speaking) return;
+                    bool trayChanged = _state != state || _shouldShow != show;
                     _state = state;
                     _shouldShow = show;
-                    UpdateTrayIcon();
+                    _speaking = speaking;
+                    if (trayChanged) UpdateTrayIcon();  // tray ignores the speaking glow
                     if (show)
                     {
                         Visible = true;
@@ -384,6 +387,21 @@ namespace DiscordMicMonitor
                     g.DrawPath(border, path);
             }
 
+            // green outline + soft glow while transmitting
+            if (_speaking && _state == MicState.Unmuted)
+            {
+                for (int i = 4; i >= 1; i--)
+                {
+                    var r = new Rectangle(card.X - i, card.Y - i, card.Width + i * 2, card.Height + i * 2);
+                    using (GraphicsPath gp = RoundedRect(r, 14 + i))
+                    using (var glow = new Pen(Color.FromArgb(22 + (4 - i) * 12, 35, 165, 90), 2.5f))
+                        g.DrawPath(glow, gp);
+                }
+                using (GraphicsPath gp = RoundedRect(card, 14))
+                using (var outline = new Pen(Color.FromArgb(230, 35, 165, 90), 2.5f))
+                    g.DrawPath(outline, gp);
+            }
+
             Color micColor, dotColor;
             switch (_state)
             {
@@ -545,7 +563,7 @@ namespace DiscordMicMonitor
         private const string ClientId = "207646673902501888";
         private const string TokenEndpoint = "https://streamkit.discord.com/overlay/token";
 
-        public event Action<MicState, bool> StateChanged;  // (mic state, in a voice channel)
+        public event Action<MicState, bool, bool> StateChanged;  // (mic state, in a voice channel, speaking)
 
         private NamedPipeClientStream _pipe;
         private readonly object _writeLock = new object();
@@ -556,6 +574,9 @@ namespace DiscordMicMonitor
         private bool _mute;
         private bool _deaf;
         private bool _inVoice;
+        private bool _speaking;
+        private string _userId;
+        private string _channelId;
         private int _nonce;
 
         public void Start()
@@ -607,6 +628,8 @@ namespace DiscordMicMonitor
                 catch (Exception) { }
                 _ready = false;
                 _inVoice = false;
+                _speaking = false;
+                _channelId = null;
                 FireDisconnected();
                 ClosePipe();
                 for (int i = 0; i < 30 && _running && !_reconnectRequested; i++)
@@ -657,6 +680,8 @@ namespace DiscordMicMonitor
 
             if (cmd == "DISPATCH" && evt == "READY")
             {
+                var user = data != null ? Get(data, "user") as Dictionary<string, object> : null;
+                if (user != null) _userId = GetStr(user, "id");
                 if (!string.IsNullOrEmpty(Config.Token)) Authenticate(Config.Token);
                 else Authorize();
             }
@@ -700,18 +725,42 @@ namespace DiscordMicMonitor
             else if (cmd == "GET_SELECTED_VOICE_CHANNEL" && evt != "ERROR")
             {
                 // data is null when not in a voice channel
-                object id = null;
-                if (data != null) data.TryGetValue("id", out id);
-                _inVoice = id != null;
-                FireState();
+                SetChannel(data != null ? GetStr(data, "id") : null);
             }
             else if (cmd == "DISPATCH" && evt == "VOICE_CHANNEL_SELECT")
             {
-                object channelId = null;
-                if (data != null) data.TryGetValue("channel_id", out channelId);
-                _inVoice = channelId != null;
-                FireState();
+                SetChannel(data != null ? GetStr(data, "channel_id") : null);
             }
+            else if (cmd == "DISPATCH" && (evt == "SPEAKING_START" || evt == "SPEAKING_STOP"))
+            {
+                string who = data != null ? GetStr(data, "user_id") : null;
+                if (who != null && who == _userId)
+                {
+                    _speaking = evt == "SPEAKING_START";
+                    FireState();
+                }
+            }
+        }
+
+        private void SetChannel(string id)
+        {
+            if (id == _channelId)
+            {
+                FireState();
+                return;
+            }
+            if (_channelId != null) SubscribeSpeaking("UNSUBSCRIBE", _channelId);
+            _channelId = id;
+            _inVoice = id != null;
+            _speaking = false;
+            if (id != null) SubscribeSpeaking("SUBSCRIBE", id);
+            FireState();
+        }
+
+        private void SubscribeSpeaking(string cmd, string channelId)
+        {
+            SendCommand(cmd, new Dictionary<string, object> { { "channel_id", channelId } }, "SPEAKING_START");
+            SendCommand(cmd, new Dictionary<string, object> { { "channel_id", channelId } }, "SPEAKING_STOP");
         }
 
         private void Authorize()
@@ -740,14 +789,14 @@ namespace DiscordMicMonitor
 
         private void FireState()
         {
-            Action<MicState, bool> h = StateChanged;
-            if (h != null) h((_mute || _deaf) ? MicState.Muted : MicState.Unmuted, _inVoice);
+            Action<MicState, bool, bool> h = StateChanged;
+            if (h != null) h((_mute || _deaf) ? MicState.Muted : MicState.Unmuted, _inVoice, _speaking);
         }
 
         private void FireDisconnected()
         {
-            Action<MicState, bool> h = StateChanged;
-            if (h != null) h(MicState.Disconnected, false);
+            Action<MicState, bool, bool> h = StateChanged;
+            if (h != null) h(MicState.Disconnected, false, false);
         }
 
         private string ExchangeCode(string code)
@@ -841,6 +890,13 @@ namespace DiscordMicMonitor
         private static int ReadInt(byte[] b, int o)
         {
             return b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
+        }
+
+        private static object Get(Dictionary<string, object> d, string key)
+        {
+            object v;
+            d.TryGetValue(key, out v);
+            return v;
         }
 
         private static string GetStr(Dictionary<string, object> d, string key)
