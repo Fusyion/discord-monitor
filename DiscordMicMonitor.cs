@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Microsoft.Win32;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -16,7 +17,7 @@ namespace DiscordMicMonitor
 {
     public static class Program
     {
-        public const string Version = "1.0.0";
+        public const string Version = "1.1.0";
 
         [STAThread]
         public static void Main()
@@ -62,10 +63,16 @@ namespace DiscordMicMonitor
         private const int BaseSize = 68;   // design size at 100% scale
         private static readonly int[] ScaleOptions = { 50, 100, 125, 150, 200 };
 
+        private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        private const string RunValueName = "DiscordMicMonitor";
+
         private readonly DiscordRpc _rpc;
+        private readonly NotifyIcon _tray;
         private ToolStripMenuItem _scaleMenu;
+        private ToolStripMenuItem _startupItem;
         private int _scalePercent = 100;
         private MicState _state = MicState.Disconnected;
+        private bool _shouldShow;   // only visible while in a Discord voice channel/call
         private Point _dragOffset;
         private Point _downScreen;
         private bool _mouseDown;
@@ -101,6 +108,14 @@ namespace DiscordMicMonitor
                 _scaleMenu.DropDownItems.Add(item);
             }
             menu.Items.Add(_scaleMenu);
+            _startupItem = new ToolStripMenuItem("Start with Windows");
+            _startupItem.Click += delegate
+            {
+                try { ToggleStartup(); }
+                catch (Exception ex) { Program.LogError(ex); }
+            };
+            _startupItem.Checked = IsStartupEnabled();
+            menu.Items.Add(_startupItem);
             menu.Items.Add("Re-authorize", null, delegate
             {
                 try
@@ -136,22 +151,101 @@ namespace DiscordMicMonitor
             }
             Location = new Point(x, y);
 
+            _tray = new NotifyIcon();
+            _tray.Text = "Discord Mic Monitor";
+            _tray.ContextMenuStrip = menu;
+            _tray.Icon = CreateStateIcon();
+            _tray.Visible = true;
+
+            // Force handle creation while hidden so the RPC thread can marshal
+            // state updates before the window is first shown.
+            IntPtr unused = Handle;
+
             _rpc.Start();
         }
 
-        private void OnRpcState(MicState state)
+        private void OnRpcState(MicState state, bool inVoice)
         {
             if (IsDisposed) return;
             try
             {
                 BeginInvoke((Action)delegate
                 {
-                    if (_state == state) return;
+                    bool show = inVoice && state != MicState.Disconnected;
+                    if (_state == state && _shouldShow == show) return;
                     _state = state;
-                    Render();
+                    _shouldShow = show;
+                    UpdateTrayIcon();
+                    if (show)
+                    {
+                        Visible = true;
+                        TopMost = true;
+                        Render();
+                    }
+                    else
+                    {
+                        Visible = false;
+                    }
                 });
             }
             catch (Exception) { }
+        }
+
+        // Keeps the window hidden until we're in a voice channel, including at startup.
+        protected override void SetVisibleCore(bool value)
+        {
+            base.SetVisibleCore(value && _shouldShow);
+        }
+
+        private static bool IsStartupEnabled()
+        {
+            using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKeyPath))
+                return k != null && k.GetValue(RunValueName) != null;
+        }
+
+        private void ToggleStartup()
+        {
+            using (RegistryKey k = Registry.CurrentUser.CreateSubKey(RunKeyPath))
+            {
+                if (IsStartupEnabled()) k.DeleteValue(RunValueName, false);
+                else k.SetValue(RunValueName, "\"" + Application.ExecutablePath + "\"");
+            }
+            _startupItem.Checked = IsStartupEnabled();
+        }
+
+        private Icon CreateStateIcon()
+        {
+            using (var bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.ScaleTransform(32f / BaseSize, 32f / BaseSize);
+                    DrawCard(g);
+                }
+                IntPtr h = bmp.GetHicon();
+                try
+                {
+                    using (Icon tmp = Icon.FromHandle(h))
+                        return (Icon)tmp.Clone();
+                }
+                finally { NativeMethods.DestroyIcon(h); }
+            }
+        }
+
+        private void UpdateTrayIcon()
+        {
+            Icon old = _tray.Icon;
+            _tray.Icon = CreateStateIcon();
+            string status;
+            switch (_state)
+            {
+                case MicState.Unmuted: status = "unmuted"; break;
+                case MicState.Muted: status = "muted"; break;
+                default: status = "not connected"; break;
+            }
+            _tray.Text = "Discord Mic Monitor - " + status;
+            if (old != null) old.Dispose();
         }
 
         private void ApplyScale(int pct, bool save)
@@ -225,6 +319,8 @@ namespace DiscordMicMonitor
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            _tray.Visible = false;
+            _tray.Dispose();
             _rpc.Stop();
             base.OnFormClosed(e);
         }
@@ -432,6 +528,9 @@ namespace DiscordMicMonitor
 
         [DllImport("gdi32.dll", ExactSpelling = true)]
         public static extern bool DeleteObject(IntPtr hObject);
+
+        [DllImport("user32.dll", ExactSpelling = true)]
+        public static extern bool DestroyIcon(IntPtr hIcon);
     }
 
     public class DiscordRpc
@@ -442,7 +541,7 @@ namespace DiscordMicMonitor
         private const string ClientId = "207646673902501888";
         private const string TokenEndpoint = "https://streamkit.discord.com/overlay/token";
 
-        public event Action<MicState> StateChanged;
+        public event Action<MicState, bool> StateChanged;  // (mic state, in a voice channel)
 
         private NamedPipeClientStream _pipe;
         private readonly object _writeLock = new object();
@@ -452,6 +551,7 @@ namespace DiscordMicMonitor
         private volatile bool _ready;
         private bool _mute;
         private bool _deaf;
+        private bool _inVoice;
         private int _nonce;
 
         public void Start()
@@ -502,7 +602,8 @@ namespace DiscordMicMonitor
                 try { Session(); }
                 catch (Exception) { }
                 _ready = false;
-                Fire(MicState.Disconnected);
+                _inVoice = false;
+                FireDisconnected();
                 ClosePipe();
                 for (int i = 0; i < 30 && _running && !_reconnectRequested; i++)
                     Thread.Sleep(100);
@@ -575,7 +676,9 @@ namespace DiscordMicMonitor
                     return;
                 }
                 SendCommand("SUBSCRIBE", new Dictionary<string, object>(), "VOICE_SETTINGS_UPDATE");
+                SendCommand("SUBSCRIBE", new Dictionary<string, object>(), "VOICE_CHANNEL_SELECT");
                 SendCommand("GET_VOICE_SETTINGS", new Dictionary<string, object>(), null);
+                SendCommand("GET_SELECTED_VOICE_CHANNEL", new Dictionary<string, object>(), null);
             }
             else if (cmd == "GET_VOICE_SETTINGS" && evt != "ERROR" && data != null)
             {
@@ -589,6 +692,21 @@ namespace DiscordMicMonitor
             else if (cmd == "DISPATCH" && evt == "VOICE_SETTINGS_UPDATE" && data != null)
             {
                 UpdateVoice(data);
+            }
+            else if (cmd == "GET_SELECTED_VOICE_CHANNEL" && evt != "ERROR")
+            {
+                // data is null when not in a voice channel
+                object id = null;
+                if (data != null) data.TryGetValue("id", out id);
+                _inVoice = id != null;
+                FireState();
+            }
+            else if (cmd == "DISPATCH" && evt == "VOICE_CHANNEL_SELECT")
+            {
+                object channelId = null;
+                if (data != null) data.TryGetValue("channel_id", out channelId);
+                _inVoice = channelId != null;
+                FireState();
             }
         }
 
@@ -613,13 +731,19 @@ namespace DiscordMicMonitor
             object v;
             if (data.TryGetValue("mute", out v) && v is bool) _mute = (bool)v;
             if (data.TryGetValue("deaf", out v) && v is bool) _deaf = (bool)v;
-            Fire((_mute || _deaf) ? MicState.Muted : MicState.Unmuted);
+            FireState();
         }
 
-        private void Fire(MicState state)
+        private void FireState()
         {
-            Action<MicState> h = StateChanged;
-            if (h != null) h(state);
+            Action<MicState, bool> h = StateChanged;
+            if (h != null) h((_mute || _deaf) ? MicState.Muted : MicState.Unmuted, _inVoice);
+        }
+
+        private void FireDisconnected()
+        {
+            Action<MicState, bool> h = StateChanged;
+            if (h != null) h(MicState.Disconnected, false);
         }
 
         private string ExchangeCode(string code)

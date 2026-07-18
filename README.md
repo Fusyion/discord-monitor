@@ -24,13 +24,14 @@ build.cmd
 
 Run `DiscordMicMonitor.exe`.
 
+- The card **only appears while you are in a voice channel or call**; the rest of the time it stays out of the way. A tray icon (which also mirrors your mute state) is always there for the menu.
 - **Drag** the card anywhere, on any monitor; position and scale are remembered.
 - **Left-click** toggles Discord mute (also undeafens if you were deafened).
-- **Right-click** → version info, Scale (50–200%), Re-authorize if the connection ever gets stuck, or Exit.
+- **Right-click** the card or tray icon → version info, Scale (50–200%), Start with Windows, Re-authorize if the connection ever gets stuck, or Exit.
 - It reconnects automatically if Discord restarts.
 
 If something misbehaves, check `%AppData%\DiscordMicMonitor\error.log`.
 
 ### Start with Windows (optional)
 
-Press `Win+R`, run `shell:startup`, and drop a shortcut to `DiscordMicMonitor.exe` there.
+Right-click the card or tray icon and tick **Start with Windows** (uses the standard `HKCU` Run registry key).
